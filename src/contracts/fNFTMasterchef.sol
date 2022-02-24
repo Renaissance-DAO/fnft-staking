@@ -38,13 +38,8 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
         uint64 allocPoint;
     }
 
-    /// @notice Address of MCV1 contract.
-    IMasterChef public immutable MASTER_CHEF;
     /// @notice Address of ART contract.
     IERC20 public immutable ART;
-    /// @notice The index of MCV2 master pool in MCV1.
-    uint256 public immutable MASTER_PID;
-
     /// @notice Info of each MCV2 pool.
     PoolInfo[] public poolInfo;
     /// @notice Address of the LP token for each MCV2 pool.
@@ -82,8 +77,6 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
         uint256 balance = dummyToken.balanceOf(msg.sender);
         require(balance != 0, "MasterChefV2: Balance must exceed 0");
         dummyToken.safeTransferFrom(msg.sender, address(this), balance);
-        dummyToken.approve(address(MASTER_CHEF), balance);
-        MASTER_CHEF.deposit(MASTER_PID, balance);
         emit LogInit();
     }
 
@@ -151,8 +144,7 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
 
     /// @notice Calculates and returns the `amount` of ART per block.
     function artPerBlock() public view returns (uint256 amount) {
-        amount = uint256(MASTERCHEF_ART_PER_BLOCK)
-            .mul(MASTER_CHEF.poolInfo(MASTER_PID).allocPoint) / MASTER_CHEF.totalAllocPoint();
+        amount = uint256(MASTERCHEF_ART_PER_BLOCK);
     }
 
     /// @notice Update reward variables of the given pool.
@@ -270,11 +262,6 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
 
         emit Withdraw(msg.sender, pid, amount, to);
         emit Harvest(msg.sender, pid, _pendingArt);
-    }
-
-    /// @notice Harvests ART from `MASTER_CHEF` MCV1 and pool `MASTER_PID` to this MCV2 contract.
-    function harvestFromMasterChef() public {
-        MASTER_CHEF.deposit(MASTER_PID, 0);
     }
 
     /// @notice Withdraw without caring about rewards. EMERGENCY ONLY.
