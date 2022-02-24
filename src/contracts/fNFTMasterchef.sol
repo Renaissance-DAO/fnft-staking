@@ -10,12 +10,6 @@ import "./libraries/SignedSafeMath.sol";
 import "./interfaces/IRewarder.sol";
 import "./interfaces/IMasterChef.sol";
 
-interface IMigratorChef {
-    // Take the current LP token address and return the new LP token address.
-    // Migrator should have full access to the caller's LP token.
-    function migrate(IERC20 token) external returns (IERC20);
-}
-
 /// @notice The (older) MasterChef contract gives out a constant number of ART tokens per block.
 /// It is the only address with minting rights for ART.
 /// The idea for this MasterChef V2 (MCV2) contract is therefore to be the owner of a dummy token
@@ -50,13 +44,11 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
     IERC20 public immutable ART;
     /// @notice The index of MCV2 master pool in MCV1.
     uint256 public immutable MASTER_PID;
-    // @notice The migrator contract. It has a lot of power. Can only be set through governance (owner).
-    IMigratorChef public migrator;
 
     /// @notice Info of each MCV2 pool.
     PoolInfo[] public poolInfo;
     /// @notice Address of the LP token for each MCV2 pool.
-    IERC20[] public lpToken;
+    IERC20[] public fnft;
     /// @notice Address of each `IRewarder` contract in MCV2.
     IRewarder[] public rewarder;
 
@@ -72,18 +64,14 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount, address indexed to);
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount, address indexed to);
     event Harvest(address indexed user, uint256 indexed pid, uint256 amount);
-    event LogPoolAddition(uint256 indexed pid, uint256 allocPoint, IERC20 indexed lpToken, IRewarder indexed rewarder);
+    event LogPoolAddition(uint256 indexed pid, uint256 allocPoint, IERC20 indexed fnft, IRewarder indexed rewarder);
     event LogSetPool(uint256 indexed pid, uint256 allocPoint, IRewarder indexed rewarder, bool overwrite);
     event LogUpdatePool(uint256 indexed pid, uint64 lastRewardBlock, uint256 lpSupply, uint256 accArtPerShare);
     event LogInit();
 
-    /// @param _MASTER_CHEF The ArtSwap MCV1 contract address.
     /// @param _art The ART token contract address.
-    /// @param _MASTER_PID The pool ID of the dummy token on the base MCV1 contract.
-    constructor(IMasterChef _MASTER_CHEF, IERC20 _art, uint256 _MASTER_PID) public {
-        MASTER_CHEF = _MASTER_CHEF;
-        ART = _art;
-        MASTER_PID = _MASTER_PID;
+    constructor(IERC20 _art) public {
+        ART = _art;        
     }
 
     /// @notice Deposits a dummy token to `MASTER_CHEF` MCV1. This is required because MCV1 holds the minting rights for ART.
@@ -107,12 +95,12 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
     /// @notice Add a new LP to the pool. Can only be called by the owner.
     /// DO NOT add the same LP token more than once. Rewards will be messed up if you do.
     /// @param allocPoint AP of the new pool.
-    /// @param _lpToken Address of the LP ERC-20 token.
+    /// @param _fnft Address of the LP ERC-20 token.
     /// @param _rewarder Address of the rewarder delegate.
-    function add(uint256 allocPoint, IERC20 _lpToken, IRewarder _rewarder) public onlyOwner {
+    function add(uint256 allocPoint, IERC20 _fnft, IRewarder _rewarder) public onlyOwner {
         uint256 lastRewardBlock = block.number;
         totalAllocPoint = totalAllocPoint.add(allocPoint);
-        lpToken.push(_lpToken);
+        fnft.push(_fnft);
         rewarder.push(_rewarder);
 
         poolInfo.push(PoolInfo({
@@ -120,7 +108,7 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
             lastRewardBlock: lastRewardBlock.to64(),
             accArtPerShare: 0
         }));
-        emit LogPoolAddition(lpToken.length.sub(1), allocPoint, _lpToken, _rewarder);
+        emit LogPoolAddition(fnft.length.sub(1), allocPoint, _fnft, _rewarder);
     }
 
     /// @notice Update the given pool's ART allocation point and `IRewarder` contract. Can only be called by the owner.
@@ -135,24 +123,6 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
         emit LogSetPool(_pid, _allocPoint, overwrite ? _rewarder : rewarder[_pid], overwrite);
     }
 
-    /// @notice Set the `migrator` contract. Can only be called by the owner.
-    /// @param _migrator The contract address to set.
-    function setMigrator(IMigratorChef _migrator) public onlyOwner {
-        migrator = _migrator;
-    }
-
-    /// @notice Migrate LP token to another LP contract through the `migrator` contract.
-    /// @param _pid The index of the pool. See `poolInfo`.
-    function migrate(uint256 _pid) public {
-        require(address(migrator) != address(0), "MasterChefV2: no migrator set");
-        IERC20 _lpToken = lpToken[_pid];
-        uint256 bal = _lpToken.balanceOf(address(this));
-        _lpToken.approve(address(migrator), bal);
-        IERC20 newLpToken = migrator.migrate(_lpToken);
-        require(bal == newLpToken.balanceOf(address(this)), "MasterChefV2: migrated balance must match");
-        lpToken[_pid] = newLpToken;
-    }
-
     /// @notice View function to see pending ART on frontend.
     /// @param _pid The index of the pool. See `poolInfo`.
     /// @param _user Address of user.
@@ -161,7 +131,7 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
         PoolInfo memory pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
         uint256 accArtPerShare = pool.accArtPerShare;
-        uint256 lpSupply = lpToken[_pid].balanceOf(address(this));
+        uint256 lpSupply = fnft[_pid].balanceOf(address(this));
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
             uint256 blocks = block.number.sub(pool.lastRewardBlock);
             uint256 artReward = blocks.mul(artPerBlock()).mul(pool.allocPoint) / totalAllocPoint;
@@ -191,7 +161,7 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
     function updatePool(uint256 pid) public returns (PoolInfo memory pool) {
         pool = poolInfo[pid];
         if (block.number > pool.lastRewardBlock) {
-            uint256 lpSupply = lpToken[pid].balanceOf(address(this));
+            uint256 lpSupply = fnft[pid].balanceOf(address(this));
             if (lpSupply > 0) {
                 uint256 blocks = block.number.sub(pool.lastRewardBlock);
                 uint256 artReward = blocks.mul(artPerBlock()).mul(pool.allocPoint) / totalAllocPoint;
@@ -221,7 +191,7 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
             _rewarder.onArtReward(pid, to, to, 0, user.amount);
         }
 
-        lpToken[pid].safeTransferFrom(msg.sender, address(this), amount);
+        fnft[pid].safeTransferFrom(msg.sender, address(this), amount);
 
         emit Deposit(msg.sender, pid, amount, to);
     }
@@ -244,7 +214,7 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
             _rewarder.onArtReward(pid, msg.sender, to, 0, user.amount);
         }
         
-        lpToken[pid].safeTransfer(to, amount);
+        fnft[pid].safeTransfer(to, amount);
 
         emit Withdraw(msg.sender, pid, amount, to);
     }
@@ -296,7 +266,7 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
             _rewarder.onArtReward(pid, msg.sender, to, _pendingArt, user.amount);
         }
 
-        lpToken[pid].safeTransfer(to, amount);
+        fnft[pid].safeTransfer(to, amount);
 
         emit Withdraw(msg.sender, pid, amount, to);
         emit Harvest(msg.sender, pid, _pendingArt);
@@ -322,7 +292,7 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
         }
 
         // Note: transfer can fail or succeed if `amount` is zero.
-        lpToken[pid].safeTransfer(to, amount);
+        fnft[pid].safeTransfer(to, amount);
         emit EmergencyWithdraw(msg.sender, pid, amount, to);
     }
 }
