@@ -9,6 +9,7 @@ import "@boringcrypto/boring-solidity/contracts/BoringOwnable.sol";
 import "./libraries/SignedSafeMath.sol";
 import "./interfaces/IRewarder.sol";
 import "./interfaces/IMasterChef.sol";
+import "./interfaces/IfNFTStakingDistributor.sol";
 
 /// @notice The (older) MasterChef contract gives out a constant number of ART tokens per block.
 /// It is the only address with minting rights for ART.
@@ -40,6 +41,7 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
 
     /// @notice Address of ART contract.
     IERC20 public immutable ART;
+    IfNFTStakingDistributor public fNFTStakingDistributor;
     /// @notice Info of each MCV2 pool.
     PoolInfo[] public poolInfo;
     /// @notice Address of the LP token for each MCV2 pool.
@@ -65,21 +67,11 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
     event LogInit();
 
     /// @param _art The ART token contract address.
-    constructor(IERC20 _art) public {
-        ART = _art;        
+    constructor(IERC20 _art, IfNFTStakingDistributor _fNFTStakingDistributor) public {
+        ART = _art;
+        fNFTStakingDistributor = _fNFTStakingDistributor;
     }
-
-    /// @notice Deposits a dummy token to `MASTER_CHEF` MCV1. This is required because MCV1 holds the minting rights for ART.
-    /// Any balance of transaction sender in `dummyToken` is transferred.
-    /// The allocation point for the pool on MCV1 is the total allocation point for all pools that receive double incentives.
-    /// @param dummyToken The address of the ERC-20 token to deposit into MCV1.
-    function init(IERC20 dummyToken) external {
-        uint256 balance = dummyToken.balanceOf(msg.sender);
-        require(balance != 0, "MasterChefV2: Balance must exceed 0");
-        dummyToken.safeTransferFrom(msg.sender, address(this), balance);
-        emit LogInit();
-    }
-
+    
     /// @notice Returns the number of MCV2 pools.
     function poolLength() public view returns (uint256 pools) {
         pools = poolInfo.length;
@@ -90,18 +82,18 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
     /// @param allocPoint AP of the new pool.
     /// @param _fnft Address of the LP ERC-20 token.
     /// @param _rewarder Address of the rewarder delegate.
-    function add(uint256 allocPoint, IERC20 _fnft, IRewarder _rewarder) public onlyOwner {
+    function add(uint256 _allocPoint, IERC20 _fnft, IRewarder _rewarder) public onlyOwner {        
         uint256 lastRewardBlock = block.number;
-        totalAllocPoint = totalAllocPoint.add(allocPoint);
+        totalAllocPoint = totalAllocPoint.add(_allocPoint);
         fnft.push(_fnft);
         rewarder.push(_rewarder);
 
         poolInfo.push(PoolInfo({
-            allocPoint: allocPoint.to64(),
+            allocPoint: _allocPoint.to64(),
             lastRewardBlock: lastRewardBlock.to64(),
             accArtPerShare: 0
         }));
-        emit LogPoolAddition(fnft.length.sub(1), allocPoint, _fnft, _rewarder);
+        emit LogPoolAddition(fnft.length.sub(1), _allocPoint, _fnft, _rewarder);
     }
 
     /// @notice Update the given pool's ART allocation point and `IRewarder` contract. Can only be called by the owner.
@@ -109,11 +101,11 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
     /// @param _allocPoint New AP of the pool.
     /// @param _rewarder Address of the rewarder delegate.
     /// @param overwrite True if _rewarder should be `set`. Otherwise `_rewarder` is ignored.
-    function set(uint256 _pid, uint256 _allocPoint, IRewarder _rewarder, bool overwrite) public onlyOwner {
+    function set(uint256 _pid, uint256 _allocPoint, IRewarder _rewarder, bool _overwrite) public onlyOwner {
         totalAllocPoint = totalAllocPoint.sub(poolInfo[_pid].allocPoint).add(_allocPoint);
         poolInfo[_pid].allocPoint = _allocPoint.to64();
-        if (overwrite) { rewarder[_pid] = _rewarder; }
-        emit LogSetPool(_pid, _allocPoint, overwrite ? _rewarder : rewarder[_pid], overwrite);
+        if (_overwrite) { rewarder[_pid] = _rewarder; }
+        emit LogSetPool(_pid, _allocPoint, _overwrite ? _rewarder : rewarder[_pid], _overwrite);
     }
 
     /// @notice View function to see pending ART on frontend.
@@ -135,10 +127,10 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
 
     /// @notice Update reward variables for all pools. Be careful of gas spending!
     /// @param pids Pool IDs of all to be updated. Make sure to update all active pools.
-    function massUpdatePools(uint256[] calldata pids) external {
-        uint256 len = pids.length;
+    function massUpdatePools(uint256[] calldata _pids) external {
+        uint256 len = _pids.length;
         for (uint256 i = 0; i < len; ++i) {
-            updatePool(pids[i]);
+            updatePool(_pids[i]);
         }
     }
 
@@ -150,73 +142,78 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
     /// @notice Update reward variables of the given pool.
     /// @param pid The index of the pool. See `poolInfo`.
     /// @return pool Returns the pool that was updated.
-    function updatePool(uint256 pid) public returns (PoolInfo memory pool) {
-        pool = poolInfo[pid];
+    function updatePool(uint256 _pid) public returns (PoolInfo memory pool) {
+        pool = poolInfo[_pid];
         if (block.number > pool.lastRewardBlock) {
-            uint256 lpSupply = fnft[pid].balanceOf(address(this));
+            uint256 lpSupply = fnft[_pid].balanceOf(address(this));
             if (lpSupply > 0) {
                 uint256 blocks = block.number.sub(pool.lastRewardBlock);
                 uint256 artReward = blocks.mul(artPerBlock()).mul(pool.allocPoint) / totalAllocPoint;
                 pool.accArtPerShare = pool.accArtPerShare.add((artReward.mul(ACC_ART_PRECISION) / lpSupply).to128());
             }
             pool.lastRewardBlock = block.number.to64();
-            poolInfo[pid] = pool;
-            emit LogUpdatePool(pid, pool.lastRewardBlock, lpSupply, pool.accArtPerShare);
+            poolInfo[_pid] = pool;
+            emit LogUpdatePool(_pid, pool.lastRewardBlock, lpSupply, pool.accArtPerShare);
         }
     }
 
-    /// @notice Deposit LP tokens to MCV2 for ART allocation.
     /// @param pid The index of the pool. See `poolInfo`.
     /// @param amount LP token amount to deposit.
     /// @param to The receiver of `amount` deposit benefit.
-    function deposit(uint256 pid, uint256 amount, address to) public {
-        PoolInfo memory pool = updatePool(pid);
-        UserInfo storage user = userInfo[pid][to];
+    function deposit(uint256 _pid, uint256 _amount, address _to, bool _trigger) public {
+        if (_trigger) {
+            fNFTStakingDistributor.rebase();
+        }
+        PoolInfo memory pool = updatePool(_pid);
+        UserInfo storage user = userInfo[_pid][_to];
 
         // Effects
-        user.amount = user.amount.add(amount);
-        user.rewardDebt = user.rewardDebt.add(int256(amount.mul(pool.accArtPerShare) / ACC_ART_PRECISION));
+        user.amount = user.amount.add(_amount);
+        user.rewardDebt = user.rewardDebt.add(int256(_amount.mul(pool.accArtPerShare) / ACC_ART_PRECISION));
 
         // Interactions
-        IRewarder _rewarder = rewarder[pid];
+        IRewarder _rewarder = rewarder[_pid];
         if (address(_rewarder) != address(0)) {
-            _rewarder.onArtReward(pid, to, to, 0, user.amount);
+            _rewarder.onArtReward(_pid, _to, _to, 0, user.amount);
         }
 
-        fnft[pid].safeTransferFrom(msg.sender, address(this), amount);
+        fnft[_pid].safeTransferFrom(msg.sender, address(this), _amount);
 
-        emit Deposit(msg.sender, pid, amount, to);
+        emit Deposit(msg.sender, _pid, _amount, _to);
     }
 
     /// @notice Withdraw LP tokens from MCV2.
     /// @param pid The index of the pool. See `poolInfo`.
     /// @param amount LP token amount to withdraw.
     /// @param to Receiver of the LP tokens.
-    function withdraw(uint256 pid, uint256 amount, address to) public {
-        PoolInfo memory pool = updatePool(pid);
-        UserInfo storage user = userInfo[pid][msg.sender];
+    function withdraw(uint256 _pid, uint256 _amount, address _to, bool _trigger) public {
+        if (_trigger) {
+            fNFTStakingDistributor.rebase();
+        }
+        PoolInfo memory pool = updatePool(_pid);
+        UserInfo storage user = userInfo[_pid][msg.sender];
 
         // Effects
-        user.rewardDebt = user.rewardDebt.sub(int256(amount.mul(pool.accArtPerShare) / ACC_ART_PRECISION));
-        user.amount = user.amount.sub(amount);
+        user.rewardDebt = user.rewardDebt.sub(int256(_amount.mul(pool.accArtPerShare) / ACC_ART_PRECISION));
+        user.amount = user.amount.sub(_amount);
 
         // Interactions
-        IRewarder _rewarder = rewarder[pid];
+        IRewarder _rewarder = rewarder[_pid];
         if (address(_rewarder) != address(0)) {
-            _rewarder.onArtReward(pid, msg.sender, to, 0, user.amount);
+            _rewarder.onArtReward(_pid, msg.sender, _to, 0, user.amount);
         }
         
-        fnft[pid].safeTransfer(to, amount);
+        fnft[_pid].safeTransfer(_to, _amount);
 
-        emit Withdraw(msg.sender, pid, amount, to);
+        emit Withdraw(msg.sender, _pid, _amount, _to);
     }
 
     /// @notice Harvest proceeds for transaction sender to `to`.
     /// @param pid The index of the pool. See `poolInfo`.
     /// @param to Receiver of ART rewards.
-    function harvest(uint256 pid, address to) public {
-        PoolInfo memory pool = updatePool(pid);
-        UserInfo storage user = userInfo[pid][msg.sender];
+    function harvest(uint256 _pid, address _to) public {
+        PoolInfo memory pool = updatePool(_pid);
+        UserInfo storage user = userInfo[_pid][msg.sender];
         int256 accumulatedArt = int256(user.amount.mul(pool.accArtPerShare) / ACC_ART_PRECISION);
         uint256 _pendingArt = accumulatedArt.sub(user.rewardDebt).toUInt256();
 
@@ -225,61 +222,61 @@ contract MasterChefV2 is BoringOwnable, BoringBatchable {
 
         // Interactions
         if (_pendingArt != 0) {
-            ART.safeTransfer(to, _pendingArt);
+            ART.safeTransfer(_to, _pendingArt);
         }
         
-        IRewarder _rewarder = rewarder[pid];
+        IRewarder _rewarder = rewarder[_pid];
         if (address(_rewarder) != address(0)) {
-            _rewarder.onArtReward( pid, msg.sender, to, _pendingArt, user.amount);
+            _rewarder.onArtReward( _pid, msg.sender, _to, _pendingArt, user.amount);
         }
 
-        emit Harvest(msg.sender, pid, _pendingArt);
+        emit Harvest(msg.sender, _pid, _pendingArt);
     }
     
     /// @notice Withdraw LP tokens from MCV2 and harvest proceeds for transaction sender to `to`.
     /// @param pid The index of the pool. See `poolInfo`.
     /// @param amount LP token amount to withdraw.
     /// @param to Receiver of the LP tokens and ART rewards.
-    function withdrawAndHarvest(uint256 pid, uint256 amount, address to) public {
-        PoolInfo memory pool = updatePool(pid);
-        UserInfo storage user = userInfo[pid][msg.sender];
+    function withdrawAndHarvest(uint256 _pid, uint256 _amount, address _to) public {
+        PoolInfo memory pool = updatePool(_pid);
+        UserInfo storage user = userInfo[_pid][msg.sender];
         int256 accumulatedArt = int256(user.amount.mul(pool.accArtPerShare) / ACC_ART_PRECISION);
         uint256 _pendingArt = accumulatedArt.sub(user.rewardDebt).toUInt256();
 
         // Effects
-        user.rewardDebt = accumulatedArt.sub(int256(amount.mul(pool.accArtPerShare) / ACC_ART_PRECISION));
-        user.amount = user.amount.sub(amount);
+        user.rewardDebt = accumulatedArt.sub(int256(_amount.mul(pool.accArtPerShare) / ACC_ART_PRECISION));
+        user.amount = user.amount.sub(_amount);
         
         // Interactions
-        ART.safeTransfer(to, _pendingArt);
+        ART.safeTransfer(_to, _pendingArt);
 
-        IRewarder _rewarder = rewarder[pid];
+        IRewarder _rewarder = rewarder[_pid];
         if (address(_rewarder) != address(0)) {
-            _rewarder.onArtReward(pid, msg.sender, to, _pendingArt, user.amount);
+            _rewarder.onArtReward(_pid, msg.sender, _to, _pendingArt, user.amount);
         }
 
-        fnft[pid].safeTransfer(to, amount);
+        fnft[_pid].safeTransfer(_to, _amount);
 
-        emit Withdraw(msg.sender, pid, amount, to);
-        emit Harvest(msg.sender, pid, _pendingArt);
+        emit Withdraw(msg.sender, _pid, _amount, _to);
+        emit Harvest(msg.sender, _pid, _pendingArt);
     }
 
     /// @notice Withdraw without caring about rewards. EMERGENCY ONLY.
     /// @param pid The index of the pool. See `poolInfo`.
     /// @param to Receiver of the LP tokens.
-    function emergencyWithdraw(uint256 pid, address to) public {
-        UserInfo storage user = userInfo[pid][msg.sender];
+    function emergencyWithdraw(uint256 _pid, address _to) public {
+        UserInfo storage user = userInfo[_pid][msg.sender];
         uint256 amount = user.amount;
         user.amount = 0;
         user.rewardDebt = 0;
 
-        IRewarder _rewarder = rewarder[pid];
+        IRewarder _rewarder = rewarder[_pid];
         if (address(_rewarder) != address(0)) {
-            _rewarder.onArtReward(pid, msg.sender, to, 0, 0);
+            _rewarder.onArtReward(_pid, msg.sender, _to, 0, 0);
         }
 
         // Note: transfer can fail or succeed if `amount` is zero.
-        fnft[pid].safeTransfer(to, amount);
-        emit EmergencyWithdraw(msg.sender, pid, amount, to);
+        fnft[_pid].safeTransfer(_to, amount);
+        emit EmergencyWithdraw(msg.sender, _pid, amount, _to);
     }
 }
