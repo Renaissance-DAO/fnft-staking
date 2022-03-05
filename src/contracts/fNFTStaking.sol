@@ -233,11 +233,11 @@ contract FNFTStaking is RenaissanceAccessControlled {
 
     // Safe art transfer function, just in case if rounding error causes pool to not have enough ARTs.
     function safeArtTransfer(address _to, uint256 _amount) internal {
-        uint256 cakeBal = cake.balanceOf(address(this));
-        if (_amount > cakeBal) {
-            cake.transfer(_to, cakeBal);
+        uint256 artBal = art.balanceOf(address(this));
+        if (_amount > artBal) {
+            art.transfer(_to, artBal);
         } else {
-            cake.transfer(_to, _amount);
+            art.transfer(_to, _amount);
         }
     }
 
