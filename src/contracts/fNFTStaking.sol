@@ -35,7 +35,7 @@ contract FNFTStaking is RenaissanceAccessControlled {
     }
 
     // The treasury for minting ART.
-    ITreasury public treasury;        
+    ITreasury public treasury;
     // The sART token.
     IERC20 public sART;
     // ART tokens created per block.
@@ -80,7 +80,7 @@ contract FNFTStaking is RenaissanceAccessControlled {
     }
 
     function add(uint256 _allocPoint, IERC20 _fNFTToken) public onlyPolicy {
-        totalAllocPoint = totalAllocPoint.add(_allocPoint);
+        totalAllocPoint = totalAllocPoint + _allocPoint;
         poolInfo.push(PoolInfo({
             fNFTToken: _fNFTToken,
             allocPoint: _allocPoint,
@@ -93,13 +93,13 @@ contract FNFTStaking is RenaissanceAccessControlled {
         uint256 prevAllocPoint = poolInfo[_pid].allocPoint;
         poolInfo[_pid].allocPoint = _allocPoint;
         if (prevAllocPoint != _allocPoint) {
-            totalAllocPoint = totalAllocPoint.sub(prevAllocPoint).add(_allocPoint);
+            totalAllocPoint = totalAllocPoint - prevAllocPoint + _allocPoint);
         }
     }
 
     // Return reward multiplier over the given _from to _to block.
     function getMultiplier(uint256 _from, uint256 _to) public view returns (uint256) {
-        return _to.sub(_from).mul(bonusMultiplier);
+        return (_to - _from) * bonusMultiplier;
     }
 
     // View function to see pending ARTs on frontend.
@@ -109,9 +109,9 @@ contract FNFTStaking is RenaissanceAccessControlled {
         uint256 fNFTSupply = pool.fNFTToken.balanceOf(address(this));
         if (block.number > user.lastRewardBlock && fNFTSupply != 0) {
             uint256 multiplier = getMultiplier(user.lastRewardedBlock, block.number);
-            uint256 artReward = multiplier.mul(artPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
+            uint256 poolArtReward = multiplier * artPerBlock * pool.allocPoint / totalAllocPoint;
 
-            return user.amount.mul(artReward).div(pool.amountStaked);
+            return user.amount * poolArtReward / pool.amountStaked;
         } else {
             return 0;
         }        
@@ -130,9 +130,10 @@ contract FNFTStaking is RenaissanceAccessControlled {
         }
         if (_amount > 0) {
             pool.fNFTToken.safeTransferFrom(address(msg.sender), address(this), _amount);
-            user.amount = user.amount.add(_amount);
+            user.amount += _amount;
         }
         user.lastRewardedBlock = block.number;
+        pool.amountStaked += _amount;
         emit Deposit(msg.sender, _pid, _amount);
     }
 
@@ -150,10 +151,11 @@ contract FNFTStaking is RenaissanceAccessControlled {
             }
         }
         if(_amount > 0) {
-            user.amount = user.amount.sub(_amount);
+            user.amount -= _amount;
             pool.fNFTToken.safeTransfer(address(msg.sender), _amount);
         }
         user.lastRewardedBlock = block.number;
+        pool.amountStaked -= _amount;
         emit Withdraw(msg.sender, _pid, _amount);
     }
 
