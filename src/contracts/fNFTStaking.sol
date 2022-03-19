@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 pragma solidity 0.8.11;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -14,30 +15,26 @@ interface IMigrator {
     function migrate(IERC20 token) external returns (IERC20);
 }
 
-interface IMigrator {      
-    function migrate(IERC20 token) external returns (IERC20);
-}
-
 contract FNFTStaking is RenaissanceAccessControlled { 
     using SafeERC20 for IERC20;
 
     // Info of each user.
     struct UserInfo {
-        uint256 amount;
+        uint256 amountStaked;
         uint256 lastRewardedBlock;
     }
 
-    // Info of each pool.
+    // Info of each fNFT pool.
     struct PoolInfo {
-        IERC20 fNFTToken;           // Address of fNFT token contract.
+        address fNFTToken;           // Address of fNFT token contract.
         uint256 allocPoint;       // How many allocation points assigned to this pool. ARTs to distribute per block.
-        uint256 amountStaked;
+        uint256 totalAmountStaked;
     }
 
     // The treasury for minting ART.
-    ITreasury public treasury;
+    address public treasury;
     // The sART token.
-    IERC20 public sART;
+    address public sART;
     // ART tokens created per block.
     uint256 public artPerBlock;
     // sART tokens that need to be staked per fNFT staked.
@@ -61,12 +58,12 @@ contract FNFTStaking is RenaissanceAccessControlled {
     event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
 
     constructor(
-        ITreasury _treasury,
-        IERC20 _sART,
+        address _treasury,
+        address _sART,
+        address _authority,
         uint256 _requiredSArtPerShare,
         uint256 _artPerBlock,
-        uint256 _startBlock,
-        address _authority
+        uint256 _startBlock
     ) public RenaissanceAccessControlled(IRenaissanceAuthority(_authority)) {
         treasury = _treasury;
         sART = _sART;
@@ -79,21 +76,21 @@ contract FNFTStaking is RenaissanceAccessControlled {
         return poolInfo.length;
     }
 
-    function add(uint256 _allocPoint, IERC20 _fNFTToken) public onlyPolicy {
+    function addStakingPool(uint256 _allocPoint, address _fNFTToken) public onlyPolicy {
         totalAllocPoint = totalAllocPoint + _allocPoint;
         poolInfo.push(PoolInfo({
             fNFTToken: _fNFTToken,
             allocPoint: _allocPoint,
-            amountStaked: 0
+            totalAmountStaked: 0
         }));
     }
 
     // Update the given pool's ART allocation point. Can only be called by the owner.
-    function set(uint256 _pid, uint256 _allocPoint) public onlyPolicy {        
+    function setAllocPoint(uint256 _pid, uint256 _allocPoint) public onlyPolicy {        
         uint256 prevAllocPoint = poolInfo[_pid].allocPoint;
         poolInfo[_pid].allocPoint = _allocPoint;
         if (prevAllocPoint != _allocPoint) {
-            totalAllocPoint = totalAllocPoint - prevAllocPoint + _allocPoint);
+            totalAllocPoint = totalAllocPoint - prevAllocPoint + _allocPoint;
         }
     }
 
@@ -104,14 +101,14 @@ contract FNFTStaking is RenaissanceAccessControlled {
 
     // View function to see pending ARTs on frontend.
     function pendingArt(uint256 _pid, address _user) public view returns (uint256) {
-        PoolInfo pool = poolInfo[_pid];
-        UserInfo user = userInfo[_pid][_user];
-        uint256 fNFTSupply = pool.fNFTToken.balanceOf(address(this));
-        if (block.number > user.lastRewardBlock && fNFTSupply != 0) {
+        PoolInfo memory pool = poolInfo[_pid];
+        UserInfo memory user = userInfo[_pid][_user];
+        uint256 fNFTSupply = IERC20(pool.fNFTToken).balanceOf(address(this));
+        if (block.number > user.lastRewardedBlock && fNFTSupply != 0) {
             uint256 multiplier = getMultiplier(user.lastRewardedBlock, block.number);
             uint256 poolArtReward = multiplier * artPerBlock * pool.allocPoint / totalAllocPoint;
 
-            return user.amount * poolArtReward / pool.amountStaked;
+            return user.amountStaked * poolArtReward / pool.totalAmountStaked;
         } else {
             return 0;
         }        
@@ -119,9 +116,11 @@ contract FNFTStaking is RenaissanceAccessControlled {
 
     // Deposit fNFT tokens for ART allocation.
     function deposit(uint256 _pid, uint256 _amount) public {
+        require(_amount > 0, "Staking amount less than 0");
+    
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        if (user.amount > 0) {
+        if (user.amountStaked > 0) {
             uint256 pending = pendingArt(_pid, msg.sender);
             if(pending > 0) {
                 safeArtTransfer(msg.sender, pending);
@@ -129,21 +128,23 @@ contract FNFTStaking is RenaissanceAccessControlled {
             }
         }
         if (_amount > 0) {
-            pool.fNFTToken.safeTransferFrom(address(msg.sender), address(this), _amount);
-            user.amount += _amount;
+            IERC20(pool.fNFTToken).safeTransferFrom(address(msg.sender), address(this), _amount);
+            user.amountStaked += _amount;
         }
         user.lastRewardedBlock = block.number;
-        pool.amountStaked += _amount;
+        pool.totalAmountStaked += _amount;
         emit Deposit(msg.sender, _pid, _amount);
     }
 
     // Withdraw fNFT tokens.
     function withdraw(uint256 _pid, uint256 _amount) public {
+        require(_amount > 0, "Withdraw staked amount less than 0.");
+
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        require(user.amount >= _amount, "withdraw: over lim");
+        require(user.amountStaked >= _amount, "withdraw: over lim");
         
-        if (user.amount > 0) {
+        if (user.amountStaked > 0) {
             uint256 pending = pendingArt(_pid, msg.sender);
             if(pending > 0) {
                 safeArtTransfer(msg.sender, pending);
@@ -151,11 +152,11 @@ contract FNFTStaking is RenaissanceAccessControlled {
             }
         }
         if(_amount > 0) {
-            user.amount -= _amount;
-            pool.fNFTToken.safeTransfer(address(msg.sender), _amount);
+            user.amountStaked -= _amount;
+            IERC20(pool.fNFTToken).safeTransfer(address(msg.sender), _amount);
         }
         user.lastRewardedBlock = block.number;
-        pool.amountStaked -= _amount;
+        pool.totalAmountStaked -= _amount;
         emit Withdraw(msg.sender, _pid, _amount);
     }
 
@@ -163,28 +164,27 @@ contract FNFTStaking is RenaissanceAccessControlled {
     function emergencyWithdraw(uint256 _pid) public {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
-        pool.fNFTToken.safeTransfer(address(msg.sender), user.amount);
-        emit EmergencyWithdraw(msg.sender, _pid, user.amount);
-        user.amount = 0;
+        IERC20(pool.fNFTToken).safeTransfer(address(msg.sender), user.amountStaked);
+        emit EmergencyWithdraw(msg.sender, _pid, user.amountStaked);
+        user.amountStaked = 0;
         user.lastRewardedBlock = block.number;
     }
 
     /// @notice Harvest proceeds for transaction sender to `to`.    
     function harvest(uint256 _pid) public {
-        PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];        
-        if (user.amount > 0) {
+        if (user.amountStaked > 0) {
             uint256 pending = pendingArt(_pid, msg.sender);
             if(pending > 0) {
                 safeArtTransfer(msg.sender, pending);
+                user.lastRewardedBlock = block.number;     
                 emit Harvest(msg.sender, _pid, pending);
             }
-        }        
-        user.lastRewardedBlock = block.number;        
+        }           
     }
     
     function safeArtTransfer(address _to, uint256 _amount) internal {
-        treasury.mintRewards(_to, _amount);        
+        ITreasury(treasury).mintRewards(_to, _amount);        
     }
 
     // Set the migrator contract. Can only be called by the owner.
@@ -203,12 +203,15 @@ contract FNFTStaking is RenaissanceAccessControlled {
     // Migrate fNFT token to another fNFT contract. Can be called by anyone. We trust that migrator contract is good.
     function migrate(uint256 _pid) public {
         require(address(migrator) != address(0), "migrate: no migrator");
+
         PoolInfo storage pool = poolInfo[_pid];
-        IERC20 fNFTToken = pool.fNFTToken;
-        uint256 bal = fNFTToken.balanceOf(address(this));
-        fNFTToken.safeApprove(address(migrator), bal);
-        IERC20 newFNFTToken = migrator.migrate(fNFTToken);
+        address fNFTTokenAddress = pool.fNFTToken;
+        uint256 bal = IERC20(fNFTTokenAddress).balanceOf(address(this));
+        IERC20(fNFTTokenAddress).safeApprove(address(migrator), bal);
+        
+        IERC20 newFNFTToken = migrator.migrate(IERC20(fNFTTokenAddress));
         require(bal == newFNFTToken.balanceOf(address(this)), "migrate: bad");
-        pool.fNFTToken = newFNFTToken;
+        
+        pool.fNFTToken = address(newFNFTToken);
     }
 }

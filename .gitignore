@@ -26,3 +26,7 @@ deployments/localhost
 /.sethrc
 
 /deployments/junk
+
+# Foundry output
+out/*
+out/
